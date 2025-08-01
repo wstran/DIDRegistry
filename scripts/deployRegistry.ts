@@ -1,36 +1,25 @@
 import { toNano } from '@ton/core';
-import { DIDRegistry } from '../wrappers/DIDRegistry';
+import { DIDRegistry } from '../build/Registry/Registry_DIDRegistry';
 import { NetworkProvider } from '@ton/blueprint';
-import { compile } from '@tact-lang/compiler';
-import { readFileSync } from 'fs';
-import { join } from 'path';
 
 export async function run(provider: NetworkProvider) {
-    // Compile the contract
-    console.log('🔨 Compiling DID Registry contract...');
-
-    const tactConfig = JSON.parse(readFileSync(join(__dirname, '../tact.config.json'), 'utf8'));
-    const projectConfig = tactConfig.projects[0];
-
-    const result = await compile({
-        ...projectConfig,
-        path: join(__dirname, '../contracts/did_registry.tact')
-    });
-
-    if (!result.ok) {
-        console.error('❌ Compilation failed:', result.error);
-        return;
-    }
-
-    console.log('✅ Contract compiled successfully');
+    console.log('🔨 Deploying DID Registry contract...');
 
     // Create contract instance
-    const didRegistry = DIDRegistry.createFromConfig({}, result.code!);
+    const didRegistry = provider.open(await DIDRegistry.fromInit());
 
     // Deploy the contract
     console.log('🚀 Deploying DID Registry to testnet...');
 
-    await provider.deploy(didRegistry, toNano('0.05'));
+    const deployResult = await didRegistry.send(
+        provider.sender(),
+        {
+            value: toNano('0.1'), // Deployment fee
+        },
+        null
+    );
+
+    await provider.waitForDeploy(didRegistry.address);
 
     const contractAddress = didRegistry.address;
     console.log('✅ DID Registry deployed successfully!');
@@ -40,17 +29,32 @@ export async function run(provider: NetworkProvider) {
     // Test basic functionality
     console.log('\n🧪 Testing contract functionality...');
 
-    const isActive = await didRegistry.isDIDActive(provider.provider(), provider.sender().address!);
-    console.log('❓ Sender has active DID:', isActive);
-
-    const totalDIDs = await didRegistry.getTotalDIDs(provider.provider());
+    const totalDIDs = await didRegistry.getTotalDIDs();
     console.log('📊 Total DIDs registered:', totalDIDs);
+
+    const contractOwner = await didRegistry.getContractOwner();
+    console.log('👤 Contract owner:', contractOwner.toString());
+
+    const senderAddress = provider.sender().address;
+    if (senderAddress) {
+        const isActive = await didRegistry.isDIDActive(senderAddress);
+        console.log('❓ Deployer has active DID:', isActive);
+
+        const userNonce = await didRegistry.getUserNonce(senderAddress);
+        console.log('🔢 Deployer current nonce:', userNonce);
+    }
 
     console.log('\n🎉 Deployment completed successfully!');
     console.log('💡 You can now register DIDs using this contract address');
+    console.log('📚 Available operations:');
+    console.log('   - RegisterDID: Register a new decentralized identity');
+    console.log('   - UpdateDID: Update existing DID information');
+    console.log('   - RevokeDID: Revoke/deactivate a DID');
+    console.log('   - getDID: Query DID information by address');
 
     return {
         contractAddress: contractAddress.toString(),
-        explorerUrl: `https://testnet.tonscan.org/address/${contractAddress.toString()}`
+        explorerUrl: `https://testnet.tonscan.org/address/${contractAddress.toString()}`,
+        success: true
     };
 }
