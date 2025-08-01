@@ -70,6 +70,7 @@ async function registerDID(didRegistry: any, provider: NetworkProvider, nonce: n
             $$type: 'RegisterDID',
             username,
             kycHash,
+            publicKey: 123456789012345678901234567890123456789012345678901234567890123456n,
             nonce,
             signature,
         }
