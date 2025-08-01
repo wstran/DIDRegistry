@@ -26,7 +26,10 @@ describe('DIDRegistry', () => {
             {
                 value: toNano('0.1'),
             },
-            null,
+            {
+                $$type: 'Deploy',
+                queryId: 0n,
+            },
         );
 
         expect(deployResult.transactions).toHaveTransaction({
@@ -47,17 +50,17 @@ describe('DIDRegistry', () => {
 
     it('should deploy successfully', async () => {
         // Check initial state
-        const totalDIDs = await didRegistry.getTotalDIDs();
+        const totalDIDs = await didRegistry.getGetTotalDiDs();
         expect(totalDIDs).toBe(0n);
 
-        const contractOwner = await didRegistry.getContractOwner();
+        const contractOwner = await didRegistry.getGetContractOwner();
         expect(contractOwner).toEqualAddress(deployer.address);
     });
 
     it('should register a new DID successfully', async () => {
         const username = 'alice';
         const kycHash = 'kycHash123';
-        const nonce = 1;
+        const nonce = 1n;
         const signature = createMockSignature().asSlice();
 
         const registerResult = await didRegistry.send(
@@ -81,7 +84,7 @@ describe('DIDRegistry', () => {
         });
 
         // Verify DID was created
-        const didInfo = await didRegistry.getDID(user1.address);
+        const didInfo = await didRegistry.getGetDid(user1.address);
         expect(didInfo).not.toBeNull();
         expect(didInfo?.username).toBe(username);
         expect(didInfo?.kycHash).toBe(kycHash);
@@ -89,23 +92,23 @@ describe('DIDRegistry', () => {
         expect(didInfo?.owner).toEqualAddress(user1.address);
 
         // Check total count
-        const totalDIDs = await didRegistry.getTotalDIDs();
+        const totalDIDs = await didRegistry.getGetTotalDiDs();
         expect(totalDIDs).toBe(1n);
 
         // Check helper methods
-        const isActive = await didRegistry.isDIDActive(user1.address);
+        const isActive = await didRegistry.getIsDidActive(user1.address);
         expect(isActive).toBe(true);
 
-        const retrievedUsername = await didRegistry.getUsername(user1.address);
+        const retrievedUsername = await didRegistry.getGetUsername(user1.address);
         expect(retrievedUsername).toBe(username);
 
-        const retrievedKycHash = await didRegistry.getKYCHash(user1.address);
+        const retrievedKycHash = await didRegistry.getGetKycHash(user1.address);
         expect(retrievedKycHash).toBe(kycHash);
     });
 
     it('should prevent duplicate DID registration', async () => {
         const username = 'alice';
-        const nonce = 1;
+        const nonce = 1n;
         const signature = createMockSignature().asSlice();
 
         // First registration should succeed
@@ -129,7 +132,7 @@ describe('DIDRegistry', () => {
                 $$type: 'RegisterDID',
                 username: 'bob',
                 kycHash: null,
-                nonce: 2,
+                nonce: 2n,
                 signature,
             }
         );
@@ -144,7 +147,7 @@ describe('DIDRegistry', () => {
     it('should update DID information', async () => {
         // First register a DID
         const initialUsername = 'alice';
-        const nonce1 = 1;
+        const nonce1 = 1n;
         const signature = createMockSignature().asSlice();
 
         await didRegistry.send(
@@ -161,7 +164,7 @@ describe('DIDRegistry', () => {
 
         // Update username
         const newUsername = 'alice_updated';
-        const nonce2 = 2;
+        const nonce2 = 2n;
 
         const updateResult = await didRegistry.send(
             user1.getSender(),
@@ -182,7 +185,7 @@ describe('DIDRegistry', () => {
         });
 
         // Verify updates
-        const updatedDID = await didRegistry.getDID(user1.address);
+        const updatedDID = await didRegistry.getGetDid(user1.address);
         expect(updatedDID?.username).toBe(newUsername);
         expect(updatedDID?.kycHash).toBe('newKycHash456');
         expect(updatedDID?.isActive).toBe(true);
@@ -190,7 +193,7 @@ describe('DIDRegistry', () => {
 
     it('should revoke DID', async () => {
         const username = 'alice';
-        const nonce1 = 1;
+        const nonce1 = 1n;
         const signature = createMockSignature().asSlice();
 
         // Register DID first
@@ -207,7 +210,7 @@ describe('DIDRegistry', () => {
         );
 
         // Revoke DID
-        const nonce2 = 2;
+        const nonce2 = 2n;
         const revokeResult = await didRegistry.send(
             user1.getSender(),
             { value: toNano('0.05') },
@@ -225,17 +228,17 @@ describe('DIDRegistry', () => {
         });
 
         // Verify DID is revoked
-        const revokedDID = await didRegistry.getDID(user1.address);
+        const revokedDID = await didRegistry.getGetDid(user1.address);
         expect(revokedDID?.isActive).toBe(false);
 
-        const isActive = await didRegistry.isDIDActive(user1.address);
+        const isActive = await didRegistry.getIsDidActive(user1.address);
         expect(isActive).toBe(false);
 
         // Should not return username/kyc for revoked DID
-        const username_result = await didRegistry.getUsername(user1.address);
+        const username_result = await didRegistry.getGetUsername(user1.address);
         expect(username_result).toBeNull();
 
-        const kycHash_result = await didRegistry.getKYCHash(user1.address);
+        const kycHash_result = await didRegistry.getGetKycHash(user1.address);
         expect(kycHash_result).toBeNull();
     });
 
@@ -251,7 +254,7 @@ describe('DIDRegistry', () => {
                 $$type: 'RegisterDID',
                 username,
                 kycHash: null,
-                nonce: 5, // Invalid - should be 1
+                nonce: 5n, // Invalid - should be 1
                 signature,
             }
         );
@@ -270,7 +273,7 @@ describe('DIDRegistry', () => {
                 $$type: 'RegisterDID',
                 username,
                 kycHash: null,
-                nonce: 1, // Correct nonce
+                nonce: 1n, // Correct nonce
                 signature,
             }
         );
@@ -282,7 +285,7 @@ describe('DIDRegistry', () => {
         });
 
         // Check nonce was updated
-        const userNonce = await didRegistry.getUserNonce(user1.address);
+        const userNonce = await didRegistry.getGetUserNonce(user1.address);
         expect(userNonce).toBe(1n);
     });
 
@@ -297,7 +300,7 @@ describe('DIDRegistry', () => {
                 $$type: 'RegisterDID',
                 username: 'alice',
                 kycHash: 'kyc1',
-                nonce: 1,
+                nonce: 1n,
                 signature,
             }
         );
@@ -309,21 +312,21 @@ describe('DIDRegistry', () => {
                 $$type: 'RegisterDID',
                 username: 'bob',
                 kycHash: 'kyc2',
-                nonce: 1,
+                nonce: 1n,
                 signature,
             }
         );
 
         // Verify both DIDs exist independently
-        const user1DID = await didRegistry.getDID(user1.address);
-        const user2DID = await didRegistry.getDID(user2.address);
+        const user1DID = await didRegistry.getGetDid(user1.address);
+        const user2DID = await didRegistry.getGetDid(user2.address);
 
         expect(user1DID?.username).toBe('alice');
         expect(user2DID?.username).toBe('bob');
         expect(user1DID?.kycHash).toBe('kyc1');
         expect(user2DID?.kycHash).toBe('kyc2');
 
-        const totalDIDs = await didRegistry.getTotalDIDs();
+        const totalDIDs = await didRegistry.getGetTotalDiDs();
         expect(totalDIDs).toBe(2n);
     });
 
@@ -338,7 +341,7 @@ describe('DIDRegistry', () => {
                 $$type: 'RegisterDID',
                 username: '',
                 kycHash: null,
-                nonce: 1,
+                nonce: 1n,
                 signature,
             }
         );
@@ -361,7 +364,7 @@ describe('DIDRegistry', () => {
                 $$type: 'UpdateDID',
                 newUsername: 'updated',
                 newKycHash: null,
-                nonce: 1,
+                nonce: 1n,
                 signature,
             }
         );
@@ -378,7 +381,7 @@ describe('DIDRegistry', () => {
             { value: toNano('0.05') },
             {
                 $$type: 'RevokeDID',
-                nonce: 1,
+                nonce: 1n,
                 signature,
             }
         );

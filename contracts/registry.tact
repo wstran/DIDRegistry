@@ -34,21 +34,6 @@ message RevokeDID {
     signature: Slice;
 }
 
-// Response messages for better UX
-message DIDRegistered {
-    owner: Address;
-    username: String;
-}
-
-message DIDUpdated {
-    owner: Address;
-    username: String;
-}
-
-message DIDRevoked {
-    owner: Address;
-}
-
 // Error codes for better debugging
 const ERROR_DID_EXISTS: Int = 1001;
 const ERROR_DID_NOT_EXISTS: Int = 1002;
@@ -65,12 +50,11 @@ contract DIDRegistry with Deployable, Ownable {
     dids: map<Address, DIDInfo>;
     userNonces: map<Address, Int>; // Track nonces per user
     totalDIDs: Int as uint32;
-    contractOwner: Address;
+    owner: Address; // Required by Ownable trait
 
     init() {
         self.totalDIDs = 0;
-        self.contractOwner = sender();
-        self.owner = sender(); // For Ownable trait
+        self.owner = sender(); // Required by Ownable trait
     }
 
     // Register a new DID with enhanced security
@@ -85,7 +69,11 @@ contract DIDRegistry with Deployable, Ownable {
         require(self.dids.get(userAddress) == null, "DID already exists");
 
         // Verify nonce for replay protection
-        let currentNonce: Int = self.userNonces.get(userAddress) ?: 0;
+        let currentNonce: Int = 0;
+        let storedNonce: Int? = self.userNonces.get(userAddress);
+        if (storedNonce != null) {
+            currentNonce = storedNonce!!;
+        }
         require(msg.nonce == currentNonce + 1, "Invalid nonce");
 
         // Verify signature
@@ -107,8 +95,8 @@ contract DIDRegistry with Deployable, Ownable {
         self.userNonces.set(userAddress, msg.nonce);
         self.totalDIDs = self.totalDIDs + 1;
 
-        // Emit response
-        emit(DIDRegistered{owner: userAddress, username: msg.username}.toCell());
+        // Send success response  
+        self.reply("DID registered successfully".asComment());
     }
 
     // Update existing DID
@@ -123,21 +111,22 @@ contract DIDRegistry with Deployable, Ownable {
         require(did.isActive, "DID is revoked");
 
         // Verify nonce
-        let currentNonce: Int = self.userNonces.get(userAddress) ?: 0;
+        let currentNonce: Int = 0;
+        let storedNonce: Int? = self.userNonces.get(userAddress);
+        if (storedNonce != null) {
+            currentNonce = storedNonce!!;
+        }
         require(msg.nonce == currentNonce + 1, "Invalid nonce");
 
         // Prepare update data for signature verification
-        let updateData: String = "";
+        let updateData: String = "update";
         if (msg.newUsername != null) {
             require(msg.newUsername!!.asSlice().bits() > 0, "Username cannot be empty");
             require(msg.newUsername!!.asSlice().bits() <= 256, "Username too long");
             updateData = msg.newUsername!!;
         }
         if (msg.newKycHash != null) {
-            updateData = concat(updateData, msg.newKycHash!!);
-        }
-        if (updateData == "") {
-            updateData = "update";
+            updateData = msg.newKycHash!!;
         }
 
         // Verify signature
@@ -158,7 +147,7 @@ contract DIDRegistry with Deployable, Ownable {
         self.dids.set(userAddress, did);
         self.userNonces.set(userAddress, msg.nonce);
 
-        emit(DIDUpdated{owner: userAddress, username: did.username}.toCell());
+        self.reply("DID updated successfully".asComment());
     }
 
     // Revoke DID
@@ -173,7 +162,11 @@ contract DIDRegistry with Deployable, Ownable {
         require(did.isActive, "DID already revoked");
 
         // Verify nonce
-        let currentNonce: Int = self.userNonces.get(userAddress) ?: 0;
+        let currentNonce: Int = 0;
+        let storedNonce: Int? = self.userNonces.get(userAddress);
+        if (storedNonce != null) {
+            currentNonce = storedNonce!!;
+        }
         require(msg.nonce == currentNonce + 1, "Invalid nonce");
 
         // Verify signature
@@ -187,7 +180,7 @@ contract DIDRegistry with Deployable, Ownable {
         self.dids.set(userAddress, did);
         self.userNonces.set(userAddress, msg.nonce);
 
-        emit(DIDRevoked{owner: userAddress}.toCell());
+        self.reply("DID revoked successfully".asComment());
     }
 
     // Enhanced signature verification with proper cryptographic checks
@@ -250,11 +243,15 @@ contract DIDRegistry with Deployable, Ownable {
     }
 
     get fun getUserNonce(owner: Address): Int {
-        return self.userNonces.get(owner) ?: 0;
+        let storedNonce: Int? = self.userNonces.get(owner);
+        if (storedNonce != null) {
+            return storedNonce!!;
+        }
+        return 0;
     }
 
     get fun getContractOwner(): Address {
-        return self.contractOwner;
+        return self.owner;
     }
 
     // Admin functions (only contract owner)
