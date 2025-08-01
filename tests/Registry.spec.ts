@@ -48,6 +48,11 @@ describe('DIDRegistry', () => {
             .endCell();
     }
 
+    // Helper function to create a mock public key
+    function createMockPublicKey(): bigint {
+        return 123456789012345678901234567890123456789012345678901234567890123456n;
+    }
+
     it('should deploy successfully', async () => {
         // Check initial state
         const totalDIDs = await didRegistry.getGetTotalDiDs();
@@ -60,6 +65,7 @@ describe('DIDRegistry', () => {
     it('should register a new DID successfully', async () => {
         const username = 'alice';
         const kycHash = 'kycHash123';
+        const publicKey = createMockPublicKey();
         const nonce = 1n;
         const signature = createMockSignature().asSlice();
 
@@ -72,6 +78,7 @@ describe('DIDRegistry', () => {
                 $$type: 'RegisterDID',
                 username,
                 kycHash,
+                publicKey,
                 nonce,
                 signature,
             }
@@ -88,6 +95,7 @@ describe('DIDRegistry', () => {
         expect(didInfo).not.toBeNull();
         expect(didInfo?.username).toBe(username);
         expect(didInfo?.kycHash).toBe(kycHash);
+        expect(didInfo?.publicKey).toBe(publicKey);
         expect(didInfo?.isActive).toBe(true);
         expect(didInfo?.owner).toEqualAddress(user1.address);
 
@@ -104,10 +112,14 @@ describe('DIDRegistry', () => {
 
         const retrievedKycHash = await didRegistry.getGetKycHash(user1.address);
         expect(retrievedKycHash).toBe(kycHash);
+
+        const retrievedPublicKey = await didRegistry.getGetPublicKey(user1.address);
+        expect(retrievedPublicKey).toBe(publicKey);
     });
 
     it('should prevent duplicate DID registration', async () => {
         const username = 'alice';
+        const publicKey = createMockPublicKey();
         const nonce = 1n;
         const signature = createMockSignature().asSlice();
 
@@ -119,6 +131,7 @@ describe('DIDRegistry', () => {
                 $$type: 'RegisterDID',
                 username,
                 kycHash: null,
+                publicKey,
                 nonce,
                 signature,
             }
@@ -131,6 +144,7 @@ describe('DIDRegistry', () => {
             {
                 $$type: 'RegisterDID',
                 username: 'bob',
+                publicKey,
                 kycHash: null,
                 nonce: 2n,
                 signature,
@@ -157,6 +171,7 @@ describe('DIDRegistry', () => {
                 $$type: 'RegisterDID',
                 username: initialUsername,
                 kycHash: null,
+                publicKey: createMockPublicKey(),
                 nonce: nonce1,
                 signature,
             }
@@ -204,6 +219,7 @@ describe('DIDRegistry', () => {
                 $$type: 'RegisterDID',
                 username,
                 kycHash: null,
+                publicKey: createMockPublicKey(),
                 nonce: nonce1,
                 signature,
             }
@@ -254,6 +270,7 @@ describe('DIDRegistry', () => {
                 $$type: 'RegisterDID',
                 username,
                 kycHash: null,
+                publicKey: createMockPublicKey(),
                 nonce: 5n, // Invalid - should be 1
                 signature,
             }
@@ -273,6 +290,7 @@ describe('DIDRegistry', () => {
                 $$type: 'RegisterDID',
                 username,
                 kycHash: null,
+                publicKey: createMockPublicKey(),
                 nonce: 1n, // Correct nonce
                 signature,
             }
@@ -300,6 +318,7 @@ describe('DIDRegistry', () => {
                 $$type: 'RegisterDID',
                 username: 'alice',
                 kycHash: 'kyc1',
+                publicKey: createMockPublicKey(),
                 nonce: 1n,
                 signature,
             }
@@ -312,6 +331,7 @@ describe('DIDRegistry', () => {
                 $$type: 'RegisterDID',
                 username: 'bob',
                 kycHash: 'kyc2',
+                publicKey: createMockPublicKey(),
                 nonce: 1n,
                 signature,
             }
@@ -341,6 +361,7 @@ describe('DIDRegistry', () => {
                 $$type: 'RegisterDID',
                 username: '',
                 kycHash: null,
+                publicKey: createMockPublicKey(),
                 nonce: 1n,
                 signature,
             }
@@ -388,6 +409,73 @@ describe('DIDRegistry', () => {
 
         expect(revokeResult.transactions).toHaveTransaction({
             from: user1.address,
+            to: didRegistry.address,
+            success: false,
+        });
+    });
+
+    it('should transfer ownership successfully', async () => {
+        const newOwner = user1.address;
+        
+        // Only current owner should be able to transfer ownership
+        const transferResult = await didRegistry.send(
+            deployer.getSender(),
+            { value: toNano('0.05') },
+            {
+                $$type: 'TransferOwnership',
+                newOwner,
+            }
+        );
+
+        expect(transferResult.transactions).toHaveTransaction({
+            from: deployer.address,
+            to: didRegistry.address,
+            success: true,
+        });
+
+        // Verify ownership has been transferred
+        const contractOwner = await didRegistry.getGetContractOwner();
+        expect(contractOwner).toEqualAddress(newOwner);
+    });
+
+    it('should prevent unauthorized ownership transfer', async () => {
+        const newOwner = user2.address;
+        
+        // Non-owner should not be able to transfer ownership
+        const transferResult = await didRegistry.send(
+            user1.getSender(),
+            { value: toNano('0.05') },
+            {
+                $$type: 'TransferOwnership',
+                newOwner,
+            }
+        );
+
+        expect(transferResult.transactions).toHaveTransaction({
+            from: user1.address,
+            to: didRegistry.address,
+            success: false,
+        });
+
+        // Owner should remain unchanged
+        const contractOwner = await didRegistry.getGetContractOwner();
+        expect(contractOwner).toEqualAddress(deployer.address);
+    });
+
+    it('should prevent transferring to same owner', async () => {
+        const sameOwner = deployer.address;
+        
+        const transferResult = await didRegistry.send(
+            deployer.getSender(),
+            { value: toNano('0.05') },
+            {
+                $$type: 'TransferOwnership',
+                newOwner: sameOwner,
+            }
+        );
+
+        expect(transferResult.transactions).toHaveTransaction({
+            from: deployer.address,
             to: didRegistry.address,
             success: false,
         });

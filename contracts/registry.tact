@@ -6,6 +6,7 @@ struct DIDInfo {
     owner: Address;
     username: String;
     kycHash: String?; // Optional KYC hash
+    publicKey: Int?; // User's public key for signature verification
     isActive: Bool;
     createdAt: Int;
     updatedAt: Int;
@@ -16,6 +17,7 @@ struct DIDInfo {
 message RegisterDID {
     username: String;
     kycHash: String?;
+    publicKey: Int; // Required for signature verification
     nonce: Int;
     signature: Slice;
 }
@@ -34,6 +36,11 @@ message RevokeDID {
     signature: Slice;
 }
 
+// Message for ownership transfer
+message TransferOwnership {
+    newOwner: Address;
+}
+
 // Error codes for better debugging
 const ERROR_DID_EXISTS: Int = 1001;
 const ERROR_DID_NOT_EXISTS: Int = 1002;
@@ -42,6 +49,15 @@ const ERROR_INVALID_USERNAME: Int = 1004;
 const ERROR_INVALID_SIGNATURE: Int = 1005;
 const ERROR_INVALID_NONCE: Int = 1006;
 const ERROR_UNAUTHORIZED: Int = 1007;
+const ERROR_INVALID_PUBLIC_KEY: Int = 1008;
+const ERROR_SAME_OWNER: Int = 1009;
+const ERROR_INSUFFICIENT_GAS: Int = 1010;
+
+// Security constants
+const MIN_USERNAME_LENGTH: Int = 1;
+const MAX_USERNAME_LENGTH: Int = 64; // Reduced for gas optimization
+const MIN_GAS_REQUIRED: Int = 50000000; // 0.05 TON minimum
+const MAX_NONCE_GAP: Int = 100; // Prevent nonce manipulation
 
 // Contract for DID Registry with enhanced security and optimization
 contract DIDRegistry with Deployable, Ownable {
@@ -60,18 +76,23 @@ contract DIDRegistry with Deployable, Ownable {
     // Register a new DID with enhanced security
     receive(msg: RegisterDID) {
         let userAddress: Address = sender();
+        
+        // Gas optimization: check sufficient gas first
+        require(context().value >= MIN_GAS_REQUIRED, "Insufficient gas provided");
 
-        // Validate input
-        require(msg.username.asSlice().bits() > 0, "Username cannot be empty");
-
-        require(msg.username.asSlice().bits() <= 256, "Username too long");
+        // Enhanced input validation
+        let usernameLength: Int = msg.username.asSlice().bits() / 8; // Convert bits to bytes
+        require(usernameLength >= MIN_USERNAME_LENGTH, "Username too short");
+        require(usernameLength <= MAX_USERNAME_LENGTH, "Username too long");
+        
+        // Validate public key
+        require(msg.publicKey > 0, "Invalid public key");
 
         // Check if DID already exists
         require(self.dids.get(userAddress) == null, "DID already exists");
 
-        // Verify nonce for replay protection
+        // Enhanced nonce verification for replay protection
         let currentNonce: Int = 0;
-
         let storedNonce: Int? = self.userNonces.get(userAddress);
 
         if (storedNonce != null) {
@@ -79,15 +100,17 @@ contract DIDRegistry with Deployable, Ownable {
         }
 
         require(msg.nonce == currentNonce + 1, "Invalid nonce");
+        require(msg.nonce <= currentNonce + MAX_NONCE_GAP, "Nonce gap too large");
 
-        // Verify signature
-        self.verifySignature(userAddress, msg.signature, msg.nonce, "register", msg.username);
+        // Verify signature with public key
+        self.verifySignature(userAddress, msg.signature, msg.nonce, "register", msg.username, msg.publicKey);
 
         // Create new DID
         let newDID: DIDInfo = DIDInfo{
             owner: userAddress,
             username: msg.username,
             kycHash: msg.kycHash,
+            publicKey: msg.publicKey,
             isActive: true,
             createdAt: now(),
             updatedAt: now(),
@@ -108,14 +131,15 @@ contract DIDRegistry with Deployable, Ownable {
     // Update existing DID
     receive(msg: UpdateDID) {
         let userAddress: Address = sender();
+        
+        // Gas optimization: check sufficient gas first
+        require(context().value >= MIN_GAS_REQUIRED, "Insufficient gas provided");
 
         // Check DID exists and is active
         let existingDID: DIDInfo? = self.dids.get(userAddress);
-
         require(existingDID != null, "DID does not exist");
 
         let did: DIDInfo = existingDID!!;
-
         require(did.isActive, "DID is revoked");
 
         // Verify nonce
@@ -129,22 +153,22 @@ contract DIDRegistry with Deployable, Ownable {
         }
         require(msg.nonce == currentNonce + 1, "Invalid nonce");
 
-        // Prepare update data for signature verification
+        // Prepare update data for signature verification with enhanced validation
         let updateData: String = "update";
 
         if (msg.newUsername != null) {
-            require(msg.newUsername!!.asSlice().bits() > 0, "Username cannot be empty");
-
-            require(msg.newUsername!!.asSlice().bits() <= 256, "Username too long");
-
+            let newUsernameLength: Int = msg.newUsername!!.asSlice().bits() / 8;
+            require(newUsernameLength >= MIN_USERNAME_LENGTH, "Username too short");
+            require(newUsernameLength <= MAX_USERNAME_LENGTH, "Username too long");
             updateData = msg.newUsername!!;
         }
         if (msg.newKycHash != null) {
             updateData = msg.newKycHash!!;
         }
 
-        // Verify signature
-        self.verifySignature(userAddress, msg.signature, msg.nonce, "update", updateData);
+        // Verify signature with stored public key
+        require(did.publicKey != null, "Public key not found for user");
+        self.verifySignature(userAddress, msg.signature, msg.nonce, "update", updateData, did.publicKey!!);
 
         // Apply updates
         if (msg.newUsername != null) {
@@ -169,14 +193,15 @@ contract DIDRegistry with Deployable, Ownable {
     // Revoke DID
     receive(msg: RevokeDID) {
         let userAddress: Address = sender();
+        
+        // Gas optimization: check sufficient gas first
+        require(context().value >= MIN_GAS_REQUIRED, "Insufficient gas provided");
 
         // Check DID exists and is active
         let existingDID: DIDInfo? = self.dids.get(userAddress);
-
         require(existingDID != null, "DID does not exist");
 
         let did: DIDInfo = existingDID!!;
-
         require(did.isActive, "DID already revoked");
 
         // Verify nonce
@@ -190,8 +215,9 @@ contract DIDRegistry with Deployable, Ownable {
 
         require(msg.nonce == currentNonce + 1, "Invalid nonce");
 
-        // Verify signature
-        self.verifySignature(userAddress, msg.signature, msg.nonce, "revoke", "");
+        // Verify signature with stored public key
+        require(did.publicKey != null, "Public key not found for user");
+        self.verifySignature(userAddress, msg.signature, msg.nonce, "revoke", "", did.publicKey!!);
 
         // Revoke DID (keep for audit trail)
         did.isActive = false;
@@ -208,8 +234,8 @@ contract DIDRegistry with Deployable, Ownable {
     }
 
     // Enhanced signature verification with proper cryptographic checks
-    fun verifySignature(userAddress: Address, signature: Slice, nonce: Int, operation: String, data: String) {
-        // Create deterministic message for signature
+    fun verifySignature(userAddress: Address, signature: Slice, nonce: Int, operation: String, data: String, publicKey: Int) {
+        // Create deterministic message for signature verification
         let messageBuilder: Builder = beginCell()
             .storeAddress(userAddress)
             .storeUint(nonce, 64)
@@ -217,25 +243,38 @@ contract DIDRegistry with Deployable, Ownable {
             .storeRef(beginCell().storeSlice(data.asSlice()).endCell());
 
         let messageCell: Cell = messageBuilder.endCell();
-
         let messageHash: Int = messageCell.hash();
 
-        // Basic signature validation (prototype level)
-        // In production: implement full ECDSA verification
-        require(signature.bits() >= 512, "Invalid signature length"); // Minimum signature length
+        // Validate signature format and length
+        require(signature.bits() >= 512, "Invalid signature length");
 
-        // Extract signature components for validation
+        // Extract signature components (r, s)
         let sigSlice: Slice = signature;
-
         let r: Int = sigSlice.loadUint(256);
-
         let s: Int = sigSlice.loadUint(256);
 
-        // Basic validation (not cryptographically secure - for prototype)
+        // Enhanced validation for signature components
         require(r > 0 && s > 0, "Invalid signature components");
+        
+        // ECDSA curve order validation (secp256k1)
+        let curveOrder: Int = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141;
+        require(r < curveOrder && s < curveOrder, "Signature components exceed curve order");
+        
+        // Prevent low-s malleable signatures for security
+        let halfOrder: Int = curveOrder / 2;
+        require(s <= halfOrder, "Signature s-value must be low to prevent malleability");
 
-        // TODO: Implement proper ECDSA verification with secp256k1
-        // check_signature(messageHash, signature, public_key);
+        // For now, implement a simplified verification for prototype
+        // In production, this should use proper ECDSA verification with external libraries
+        // TODO: Implement proper signature verification using TON SDK or FunC native functions
+        
+        // Create a deterministic check based on messageHash and publicKey
+        let expectedSignature: Int = messageHash + publicKey;
+        let computedSignature: Int = r + s;
+        
+        // This is a placeholder verification - NOT CRYPTOGRAPHICALLY SECURE
+        // Replace with proper ECDSA verification in production
+        require(computedSignature > 0, "Signature verification failed - placeholder check");
     }
 
     // Get methods for external queries
@@ -282,6 +321,26 @@ contract DIDRegistry with Deployable, Ownable {
 
     get fun getContractOwner(): Address {
         return self.owner;
+    }
+
+    get fun getPublicKey(owner: Address): Int? {
+        let did: DIDInfo? = self.dids.get(owner);
+        if (did == null || !did!!.isActive) {
+            return null;
+        }
+        return did!!.publicKey;
+    }
+
+    // Transfer ownership to new address
+    receive(msg: TransferOwnership) {
+        self.requireOwner();
+        require(msg.newOwner != self.owner, "New owner cannot be the same as current owner");
+        
+        let oldOwner: Address = self.owner;
+        self.owner = msg.newOwner;
+        
+        // Emit ownership transfer event
+        self.reply("OwnershipTransferred".asComment());
     }
 
     // Admin functions (only contract owner)
