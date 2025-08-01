@@ -45,7 +45,6 @@ const ERROR_UNAUTHORIZED: Int = 1007;
 
 // Contract for DID Registry with enhanced security and optimization
 contract DIDRegistry with Deployable, Ownable {
-
     // Optimized storage layout
     dids: map<Address, DIDInfo>;
     userNonces: map<Address, Int>; // Track nonces per user
@@ -54,6 +53,7 @@ contract DIDRegistry with Deployable, Ownable {
 
     init() {
         self.totalDIDs = 0;
+
         self.owner = sender(); // Required by Ownable trait
     }
 
@@ -63,6 +63,7 @@ contract DIDRegistry with Deployable, Ownable {
 
         // Validate input
         require(msg.username.asSlice().bits() > 0, "Username cannot be empty");
+
         require(msg.username.asSlice().bits() <= 256, "Username too long");
 
         // Check if DID already exists
@@ -70,10 +71,13 @@ contract DIDRegistry with Deployable, Ownable {
 
         // Verify nonce for replay protection
         let currentNonce: Int = 0;
+
         let storedNonce: Int? = self.userNonces.get(userAddress);
+
         if (storedNonce != null) {
             currentNonce = storedNonce!!;
         }
+
         require(msg.nonce == currentNonce + 1, "Invalid nonce");
 
         // Verify signature
@@ -92,10 +96,12 @@ contract DIDRegistry with Deployable, Ownable {
 
         // Store DID and update counters
         self.dids.set(userAddress, newDID);
-        self.userNonces.set(userAddress, msg.nonce);
-        self.totalDIDs = self.totalDIDs + 1;
 
-        // Send success response  
+        self.userNonces.set(userAddress, msg.nonce);
+
+        self.totalDIDs += 1;
+
+        // Send success response
         self.reply("DID registered successfully".asComment());
     }
 
@@ -105,24 +111,32 @@ contract DIDRegistry with Deployable, Ownable {
 
         // Check DID exists and is active
         let existingDID: DIDInfo? = self.dids.get(userAddress);
+
         require(existingDID != null, "DID does not exist");
-        
+
         let did: DIDInfo = existingDID!!;
+
         require(did.isActive, "DID is revoked");
 
         // Verify nonce
         let currentNonce: Int = 0;
+
         let storedNonce: Int? = self.userNonces.get(userAddress);
+
         if (storedNonce != null) {
+
             currentNonce = storedNonce!!;
         }
         require(msg.nonce == currentNonce + 1, "Invalid nonce");
 
         // Prepare update data for signature verification
         let updateData: String = "update";
+
         if (msg.newUsername != null) {
             require(msg.newUsername!!.asSlice().bits() > 0, "Username cannot be empty");
+
             require(msg.newUsername!!.asSlice().bits() <= 256, "Username too long");
+
             updateData = msg.newUsername!!;
         }
         if (msg.newKycHash != null) {
@@ -141,10 +155,12 @@ contract DIDRegistry with Deployable, Ownable {
         }
 
         did.updatedAt = now();
+
         did.nonce = msg.nonce;
 
         // Save updated DID
         self.dids.set(userAddress, did);
+
         self.userNonces.set(userAddress, msg.nonce);
 
         self.reply("DID updated successfully".asComment());
@@ -156,17 +172,22 @@ contract DIDRegistry with Deployable, Ownable {
 
         // Check DID exists and is active
         let existingDID: DIDInfo? = self.dids.get(userAddress);
+
         require(existingDID != null, "DID does not exist");
-        
+
         let did: DIDInfo = existingDID!!;
+
         require(did.isActive, "DID already revoked");
 
         // Verify nonce
         let currentNonce: Int = 0;
+
         let storedNonce: Int? = self.userNonces.get(userAddress);
+
         if (storedNonce != null) {
             currentNonce = storedNonce!!;
         }
+
         require(msg.nonce == currentNonce + 1, "Invalid nonce");
 
         // Verify signature
@@ -174,10 +195,13 @@ contract DIDRegistry with Deployable, Ownable {
 
         // Revoke DID (keep for audit trail)
         did.isActive = false;
+
         did.updatedAt = now();
+
         did.nonce = msg.nonce;
 
         self.dids.set(userAddress, did);
+
         self.userNonces.set(userAddress, msg.nonce);
 
         self.reply("DID revoked successfully".asComment());
@@ -193,20 +217,23 @@ contract DIDRegistry with Deployable, Ownable {
             .storeRef(beginCell().storeSlice(data.asSlice()).endCell());
 
         let messageCell: Cell = messageBuilder.endCell();
+
         let messageHash: Int = messageCell.hash();
 
         // Basic signature validation (prototype level)
         // In production: implement full ECDSA verification
         require(signature.bits() >= 512, "Invalid signature length"); // Minimum signature length
-        
+
         // Extract signature components for validation
         let sigSlice: Slice = signature;
+
         let r: Int = sigSlice.loadUint(256);
+
         let s: Int = sigSlice.loadUint(256);
-        
+
         // Basic validation (not cryptographically secure - for prototype)
         require(r > 0 && s > 0, "Invalid signature components");
-        
+
         // TODO: Implement proper ECDSA verification with secp256k1
         // check_signature(messageHash, signature, public_key);
     }
@@ -223,14 +250,17 @@ contract DIDRegistry with Deployable, Ownable {
 
     get fun isDIDActive(owner: Address): Bool {
         let did: DIDInfo? = self.dids.get(owner);
+
         return did != null && did!!.isActive;
     }
 
     get fun getUsername(owner: Address): String? {
         let did: DIDInfo? = self.dids.get(owner);
+
         if (did == null || !did!!.isActive) {
             return null;
         }
+
         return did!!.username;
     }
 
@@ -266,7 +296,7 @@ contract DIDRegistry with Deployable, Ownable {
     }
 
     bounced(src: bounced<UpdateDID>) {
-        // Log bounced update for debugging  
+        // Log bounced update for debugging
     }
 
     bounced(src: bounced<RevokeDID>) {
