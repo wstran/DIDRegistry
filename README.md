@@ -23,7 +23,7 @@ A secure and gas-optimized smart contract system for managing decentralized iden
 ### Security Model
 
 1. **Signature Verification**: All operations require valid cryptographic signatures
-2. **Nonce Protection**: Incremental nonces prevent replay attacks  
+2. **Nonce Protection**: Incremental nonces prevent replay attacks
 3. **Input Validation**: Username length limits and format checks
 4. **Owner Authorization**: Only DID owners can modify their identities
 5. **State Verification**: Proper checks for DID existence and active status
@@ -39,7 +39,7 @@ A secure and gas-optimized smart contract system for managing decentralized iden
 
 ### Prerequisites
 
-- Node.js 18+ 
+- Node.js 18+
 - npm or yarn
 - TON Wallet for testnet deployment
 
@@ -180,7 +180,7 @@ The contract is optimized for minimal gas usage:
 ## 📊 Performance Metrics
 
 - **Registration**: ~0.05 TON gas cost
-- **Update**: ~0.04 TON gas cost  
+- **Update**: ~0.04 TON gas cost
 - **Revocation**: ~0.03 TON gas cost
 - **Queries**: Free (get methods)
 
@@ -214,3 +214,13 @@ The deployed contract demonstrates:
 5. **Query Interface**: Retrieve identity information and status
 
 This implementation provides a solid foundation for decentralized identity management on TON blockchain with enterprise-grade security and optimization.
+
+### ⚠ Design Note
+
+This contract intentionally uses `publicKey` as the unique identifier for DID registration and updates, instead of `wallet address`, because:
+- On TON, `address` is derived from contract state (code + data) and cannot be used to recover `publicKey`.
+- Verifying off-chain signatures (e.g., from frontend or mobile clients) requires the raw `publicKey`.
+- This design aligns with the DID spec and the security model of TON.
+
+We generate the signature payloads in a consistent `key:value` format for each action, hashed with `sha256()` and verified using `checkSignature()`. This ensures robustness against signature malleability and easy reproduction on the client-side.
+
