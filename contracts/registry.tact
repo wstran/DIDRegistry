@@ -76,7 +76,11 @@ contract DIDRegistry with Deployable {
     }
 
     fun validateAndGetNonce(publicKey: Int, expectedNonce: Int): Int {
-        let currentNonce: Int = self.userNonces.get(publicKey) ?: 0;
+        let storedNonce: Int? = self.userNonces.get(publicKey);
+        let currentNonce: Int = 0;
+        if (storedNonce != null) {
+            currentNonce = storedNonce!!;
+        }
 
         require(expectedNonce == currentNonce + 1, "Invalid nonce");
 

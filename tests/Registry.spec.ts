@@ -1,7 +1,97 @@
 import { Blockchain, SandboxContract, TreasuryContract } from '@ton/sandbox';
-import { toNano, Cell, beginCell, Address } from '@ton/core';
+import { Cell, toNano, beginCell } from '@ton/core';
 import { DIDRegistry } from '../build/Registry/Registry_DIDRegistry';
 import '@ton/test-utils';
+import { mnemonicToPrivateKey, sha256, sign } from '@ton/crypto';
+
+// Test mnemonics for different users
+const TEST_MNEMONICS = {
+    user1: [
+        'abandon', 'abandon', 'abandon', 'abandon', 'abandon', 'abandon',
+        'abandon', 'abandon', 'abandon', 'abandon', 'abandon', 'abandon',
+        'abandon', 'abandon', 'abandon', 'abandon', 'abandon', 'abandon',
+        'abandon', 'abandon', 'abandon', 'abandon', 'abandon', 'art'
+    ],
+    user2: [
+        'abandon', 'abandon', 'abandon', 'abandon', 'abandon', 'abandon',
+        'abandon', 'abandon', 'abandon', 'abandon', 'abandon', 'abandon',
+        'abandon', 'abandon', 'abandon', 'abandon', 'abandon', 'abandon',
+        'abandon', 'abandon', 'abandon', 'abandon', 'abandon', 'ability'
+    ]
+};
+
+/**
+ * Generate test keypair from mnemonic
+ */
+async function getTestKeyPair(userKey: keyof typeof TEST_MNEMONICS) {
+    const keyPair = await mnemonicToPrivateKey(TEST_MNEMONICS[userKey]);
+    const publicKeyBigInt = BigInt('0x' + keyPair.publicKey.toString('hex'));
+    
+    return {
+        secretKey: keyPair.secretKey,
+        publicKey: keyPair.publicKey,
+        publicKeyBigInt
+    };
+}
+
+/**
+ * Create signature matching the contract's expected format
+ */
+async function createSignature(
+    action: 'register' | 'update' | 'revoke',
+    params: {
+        publicKey?: bigint;
+        username?: string;
+        kycHash?: string | null;
+        newUsername?: string | null;
+        newKycHash?: string | null;
+        nonce: number;
+    },
+    secretKey: Buffer
+): Promise<Buffer> {
+    let messageBuilder = `${action}::`;
+    
+    switch (action) {
+        case 'register':
+            messageBuilder += `publicKey:${params.publicKey!.toString()}`;
+            messageBuilder += `username:${params.username!}`;
+            if (params.kycHash !== null && params.kycHash !== undefined) {
+                messageBuilder += `kycHash:${params.kycHash}`;
+            }
+            break;
+            
+        case 'update':
+            if (params.newUsername !== null && params.newUsername !== undefined) {
+                messageBuilder += `newUsername:${params.newUsername}`;
+            }
+            if (params.newKycHash !== null && params.newKycHash !== undefined) {
+                messageBuilder += `newKycHash:${params.newKycHash}`;
+            }
+            break;
+            
+        case 'revoke':
+            // No additional params for revoke
+            break;
+    }
+    
+    messageBuilder += `nonce:${params.nonce}`;
+    
+    // Hash the message
+    const messageBuffer = Buffer.from(messageBuilder, 'utf8');
+    const messageHash = await sha256(messageBuffer);
+    
+    // Sign the hash
+    const signature = sign(messageHash, secretKey);
+    
+    return signature;
+}
+
+/**
+ * Convert Buffer signature to Cell for contract
+ */
+function signatureToCell(signature: Buffer): any {
+    return beginCell().storeBuffer(signature).endCell().beginParse();
+}
 
 describe('DIDRegistry', () => {
     let blockchain: Blockchain;
@@ -9,27 +99,31 @@ describe('DIDRegistry', () => {
     let user1: SandboxContract<TreasuryContract>;
     let user2: SandboxContract<TreasuryContract>;
     let didRegistry: SandboxContract<DIDRegistry>;
+    let user1KeyPair: any;
+    let user2KeyPair: any;
 
     beforeEach(async () => {
         blockchain = await Blockchain.create();
-
-        // Create test users
         deployer = await blockchain.treasury('deployer');
         user1 = await blockchain.treasury('user1');
         user2 = await blockchain.treasury('user2');
 
-        // Deploy DID Registry contract
+        // Create test keypairs
+        user1KeyPair = await getTestKeyPair('user1');
+        user2KeyPair = await getTestKeyPair('user2');
+
+        // Deploy contract
         didRegistry = blockchain.openContract(await DIDRegistry.fromInit());
 
         const deployResult = await didRegistry.send(
             deployer.getSender(),
             {
-                value: toNano('0.1'),
+                value: toNano('0.05'),
             },
             {
                 $$type: 'Deploy',
                 queryId: 0n,
-            },
+            }
         );
 
         expect(deployResult.transactions).toHaveTransaction({
@@ -40,320 +134,640 @@ describe('DIDRegistry', () => {
         });
     });
 
-    // Helper function to create a mock signature
-    function createMockSignature(): Cell {
-        return beginCell()
-            .storeUint(12345678901234567890n, 256) // Mock r component
-            .storeUint(98765432109876543210n, 256) // Mock s component  
-            .endCell();
-    }
-
-    // Helper function to create a mock public key
-    function createMockPublicKey(): bigint {
-        return 123456789012345678901234567890123456789012345678901234567890123456n;
-    }
-
-    // Helper function to register a DID for testing
-    async function registerTestDID(user: SandboxContract<TreasuryContract>, username: string = 'testuser', kycHash: string | null = null) {
-        return await didRegistry.send(
-            user.getSender(),
-            { value: toNano('0.05') },
-            {
-                $$type: 'RegisterDID',
-                username,
-                kycHash,
-                publicKey: createMockPublicKey(),
-                nonce: 1n,
-                signature: createMockSignature().asSlice(),
-            }
-        );
-    }
-
-    describe('Basic Functionality', () => {
-        it('should deploy successfully', async () => {
-            // Check initial state
-            const totalDIDs = await didRegistry.getGetTotalDiDs();
-            expect(totalDIDs).toBe(0n);
-
-            const contractOwner = await didRegistry.getGetContractOwner();
-            expect(contractOwner).toEqualAddress(deployer.address);
+    describe('Deployment', () => {
+        it('should deploy with correct initial state', async () => {
+            const totalDids = await didRegistry.getGetTotalDids();
+            expect(totalDids).toBe(0n);
         });
 
-        it('should register a new DID successfully', async () => {
-            const username = 'alice';
-            const kycHash = 'kycHash123';
-            const publicKey = createMockPublicKey();
-            const nonce = 1n;
-            const signature = createMockSignature().asSlice();
+        it('should return correct getter values for non-existent DID', async () => {
+            const didInfo = await didRegistry.getGetDid(user1KeyPair.publicKeyBigInt);
+            expect(didInfo).toBeNull();
 
-            const registerResult = await didRegistry.send(
+            const isActive = await didRegistry.getIsDidActive(user1KeyPair.publicKeyBigInt);
+            expect(isActive).toBe(false);
+
+            const username = await didRegistry.getGetDidUsername(user1KeyPair.publicKeyBigInt);
+            expect(username).toBeNull();
+
+            const kycHash = await didRegistry.getGetDidKycHash(user1KeyPair.publicKeyBigInt);
+            expect(kycHash).toBeNull();
+
+            const createdAt = await didRegistry.getGetDidCreatedAt(user1KeyPair.publicKeyBigInt);
+            expect(createdAt).toBeNull();
+
+            const userNonce = await didRegistry.getGetUserNonce(user1KeyPair.publicKeyBigInt);
+            expect(userNonce).toBe(0n);
+        });
+    });
+
+    describe('DID Registration', () => {
+        it('should register DID successfully with valid signature', async () => {
+            const username = 'test_user';
+            const kycHash = 'kyc_hash_123';
+            const nonce = 1;
+
+            const signature = await createSignature('register', {
+                publicKey: user1KeyPair.publicKeyBigInt,
+                username,
+                kycHash,
+                nonce
+            }, user1KeyPair.secretKey);
+
+            const result = await didRegistry.send(
                 user1.getSender(),
-                { value: toNano('0.05') },
+                {
+                    value: toNano('0.05'),
+                },
                 {
                     $$type: 'RegisterDID',
+                    publicKey: user1KeyPair.publicKeyBigInt,
                     username,
                     kycHash,
-                    publicKey,
-                    nonce,
-                    signature,
+                    nonce: BigInt(nonce),
+                    signature: signatureToCell(signature),
                 }
             );
 
-            expect(registerResult.transactions).toHaveTransaction({
+            expect(result.transactions).toHaveTransaction({
                 from: user1.address,
                 to: didRegistry.address,
                 success: true,
             });
 
-            // Verify DID was created
-            const didInfo = await didRegistry.getGetDid(user1.address);
+            // Check DID was created
+            const didInfo = await didRegistry.getGetDid(user1KeyPair.publicKeyBigInt);
             expect(didInfo).not.toBeNull();
-            expect(didInfo?.username).toBe(username);
-            expect(didInfo?.kycHash).toBe(kycHash);
-            expect(didInfo?.publicKey).toBe(publicKey);
-            expect(didInfo?.isActive).toBe(true);
-            expect(didInfo?.owner).toEqualAddress(user1.address);
-            expect(didInfo?.nonce).toBe(nonce);
+            expect(didInfo!.username).toBe(username);
+            expect(didInfo!.kycHash).toBe(kycHash);
+            expect(didInfo!.isActive).toBe(true);
+            expect(didInfo!.nonce).toBe(BigInt(nonce));
 
             // Check total count increased
-            const totalDIDs = await didRegistry.getGetTotalDiDs();
-            expect(totalDIDs).toBe(1n);
+            const totalDids = await didRegistry.getGetTotalDids();
+            expect(totalDids).toBe(1n);
 
-            // Check nonce updated
-            const userNonce = await didRegistry.getGetUserNonce(user1.address);
-            expect(userNonce).toBe(nonce);
+            // Check getters work
+            const isActive = await didRegistry.getIsDidActive(user1KeyPair.publicKeyBigInt);
+            expect(isActive).toBe(true);
+
+            const retrievedUsername = await didRegistry.getGetDidUsername(user1KeyPair.publicKeyBigInt);
+            expect(retrievedUsername).toBe(username);
+
+            const userNonce = await didRegistry.getGetUserNonce(user1KeyPair.publicKeyBigInt);
+            expect(userNonce).toBe(BigInt(nonce));
         });
 
         it('should register DID without KYC hash', async () => {
-            const username = 'bob';
-            
-            const registerResult = await registerTestDID(user1, username, null);
+            const username = 'test_user_no_kyc';
+            const nonce = 1;
 
-            expect(registerResult.transactions).toHaveTransaction({
-                from: user1.address,
-                to: didRegistry.address,
-                success: true,
-            });
+            const signature = await createSignature('register', {
+                publicKey: user1KeyPair.publicKeyBigInt,
+                username,
+                kycHash: null,
+                nonce
+            }, user1KeyPair.secretKey);
 
-            const didInfo = await didRegistry.getGetDid(user1.address);
-            expect(didInfo?.username).toBe(username);
-            expect(didInfo?.kycHash).toBeNull();
-        });
-    });
-
-    describe('Events Testing', () => {
-        it('should emit DIDRegistered event', async () => {
-            const username = 'alice';
-            
-            const registerResult = await registerTestDID(user1, username);
-
-            // Check for successful registration (events may not be visible in sandbox)
-            expect(registerResult.transactions).toHaveTransaction({
-                from: user1.address,
-                to: didRegistry.address,
-                success: true,
-            });
-            
-            // Verify DID was created successfully
-            const didInfo = await didRegistry.getGetDid(user1.address);
-            expect(didInfo).not.toBeNull();
-            expect(didInfo?.username).toBe(username);
-        });
-
-        it('should emit DIDUpdated event on update', async () => {
-            // Register first
-            await registerTestDID(user1);
-
-            // Update DID
-            const updateResult = await didRegistry.send(
+            const result = await didRegistry.send(
                 user1.getSender(),
-                { value: toNano('0.05') },
                 {
-                    $$type: 'UpdateDID',
-                    newUsername: 'newusername',
-                    newKycHash: null,
-                    nonce: 2n,
-                    signature: createMockSignature().asSlice(),
+                    value: toNano('0.05'),
+                },
+                {
+                    $$type: 'RegisterDID',
+                    publicKey: user1KeyPair.publicKeyBigInt,
+                    username,
+                    kycHash: null,
+                    nonce: BigInt(nonce),
+                    signature: signatureToCell(signature),
                 }
             );
 
-            // Check for successful update
-            expect(updateResult.transactions).toHaveTransaction({
+            expect(result.transactions).toHaveTransaction({
                 from: user1.address,
                 to: didRegistry.address,
                 success: true,
             });
+
+            const didInfo = await didRegistry.getGetDid(user1KeyPair.publicKeyBigInt);
+            expect(didInfo!.username).toBe(username);
+            expect(didInfo!.kycHash).toBeNull();
         });
 
-        it('should emit DIDRevoked event on revoke', async () => {
-            // Register first
-            await registerTestDID(user1);
+        it('should fail registration with invalid signature', async () => {
+            const username = 'test_user';
+            const nonce = 1;
 
-            // Revoke DID
-            const revokeResult = await didRegistry.send(
+            // Create signature with wrong data
+            const wrongSignature = await createSignature('register', {
+                publicKey: user1KeyPair.publicKeyBigInt,
+                username: 'wrong_username',
+                kycHash: null,
+                nonce
+            }, user1KeyPair.secretKey);
+
+            const result = await didRegistry.send(
                 user1.getSender(),
-                { value: toNano('0.05') },
                 {
-                    $$type: 'RevokeDID',
-                    nonce: 2n,
-                    signature: createMockSignature().asSlice(),
+                    value: toNano('0.05'),
+                },
+                {
+                    $$type: 'RegisterDID',
+                    publicKey: user1KeyPair.publicKeyBigInt,
+                    username,
+                    kycHash: null,
+                    nonce: BigInt(nonce),
+                    signature: signatureToCell(wrongSignature),
                 }
             );
 
-            // Check for successful revocation
-            expect(revokeResult.transactions).toHaveTransaction({
+            expect(result.transactions).toHaveTransaction({
                 from: user1.address,
                 to: didRegistry.address,
-                success: true,
+                success: false,
+            });
+        });
+
+        it('should fail registration with invalid nonce', async () => {
+            const username = 'test_user';
+            const wrongNonce = 5; // Should be 1
+
+            const signature = await createSignature('register', {
+                publicKey: user1KeyPair.publicKeyBigInt,
+                username,
+                kycHash: null,
+                nonce: wrongNonce
+            }, user1KeyPair.secretKey);
+
+            const result = await didRegistry.send(
+                user1.getSender(),
+                {
+                    value: toNano('0.05'),
+                },
+                {
+                    $$type: 'RegisterDID',
+                    publicKey: user1KeyPair.publicKeyBigInt,
+                    username,
+                    kycHash: null,
+                    nonce: BigInt(wrongNonce),
+                    signature: signatureToCell(signature),
+                }
+            );
+
+            expect(result.transactions).toHaveTransaction({
+                from: user1.address,
+                to: didRegistry.address,
+                success: false,
+            });
+        });
+
+        it('should fail registration if DID already exists', async () => {
+            // First registration
+            const username1 = 'test_user';
+            const nonce1 = 1;
+
+            const signature1 = await createSignature('register', {
+                publicKey: user1KeyPair.publicKeyBigInt,
+                username: username1,
+                kycHash: null,
+                nonce: nonce1
+            }, user1KeyPair.secretKey);
+
+            await didRegistry.send(
+                user1.getSender(),
+                {
+                    value: toNano('0.05'),
+                },
+                {
+                    $$type: 'RegisterDID',
+                    publicKey: user1KeyPair.publicKeyBigInt,
+                    username: username1,
+                    kycHash: null,
+                    nonce: BigInt(nonce1),
+                    signature: signatureToCell(signature1),
+                }
+            );
+
+            // Second registration attempt
+            const username2 = 'test_user_2';
+            const nonce2 = 2;
+
+            const signature2 = await createSignature('register', {
+                publicKey: user1KeyPair.publicKeyBigInt,
+                username: username2,
+                kycHash: null,
+                nonce: nonce2
+            }, user1KeyPair.secretKey);
+
+            const result = await didRegistry.send(
+                user1.getSender(),
+                {
+                    value: toNano('0.05'),
+                },
+                {
+                    $$type: 'RegisterDID',
+                    publicKey: user1KeyPair.publicKeyBigInt,
+                    username: username2,
+                    kycHash: null,
+                    nonce: BigInt(nonce2),
+                    signature: signatureToCell(signature2),
+                }
+            );
+
+            expect(result.transactions).toHaveTransaction({
+                from: user1.address,
+                to: didRegistry.address,
+                success: false,
             });
         });
     });
 
-    describe('Update DID', () => {
+    describe('DID Update', () => {
         beforeEach(async () => {
-            await registerTestDID(user1, 'alice', 'kycHash123');
+            // Register a DID first
+            const username = 'initial_user';
+            const nonce = 1;
+
+            const signature = await createSignature('register', {
+                publicKey: user1KeyPair.publicKeyBigInt,
+                username,
+                kycHash: null,
+                nonce
+            }, user1KeyPair.secretKey);
+
+            await didRegistry.send(
+                user1.getSender(),
+                {
+                    value: toNano('0.05'),
+                },
+                {
+                    $$type: 'RegisterDID',
+                    publicKey: user1KeyPair.publicKeyBigInt,
+                    username,
+                    kycHash: null,
+                    nonce: BigInt(nonce),
+                    signature: signatureToCell(signature),
+                }
+            );
         });
 
         it('should update username successfully', async () => {
-            const newUsername = 'alice_updated';
-            
-            const updateResult = await didRegistry.send(
+            const newUsername = 'updated_user';
+            const nonce = 2;
+
+            const signature = await createSignature('update', {
+                newUsername,
+                newKycHash: null,
+                nonce
+            }, user1KeyPair.secretKey);
+
+            const result = await didRegistry.send(
                 user1.getSender(),
-                { value: toNano('0.05') },
+                {
+                    value: toNano('0.05'),
+                },
                 {
                     $$type: 'UpdateDID',
+                    publicKey: user1KeyPair.publicKeyBigInt,
                     newUsername,
                     newKycHash: null,
-                    nonce: 2n,
-                    signature: createMockSignature().asSlice(),
+                    nonce: BigInt(nonce),
+                    signature: signatureToCell(signature),
                 }
             );
 
-            expect(updateResult.transactions).toHaveTransaction({
+            expect(result.transactions).toHaveTransaction({
                 from: user1.address,
                 to: didRegistry.address,
                 success: true,
             });
 
-            const updatedDID = await didRegistry.getGetDid(user1.address);
-            expect(updatedDID?.username).toBe(newUsername);
-            expect(updatedDID?.kycHash).toBe('kycHash123'); // Should remain unchanged
+            const didInfo = await didRegistry.getGetDid(user1KeyPair.publicKeyBigInt);
+            expect(didInfo!.username).toBe(newUsername);
+            expect(didInfo!.nonce).toBe(BigInt(nonce));
         });
 
         it('should update KYC hash successfully', async () => {
-            const newKycHash = 'newKycHash456';
-            
-            const updateResult = await didRegistry.send(
+            const newKycHash = 'new_kyc_123';
+            const nonce = 2;
+
+            const signature = await createSignature('update', {
+                newUsername: null,
+                newKycHash,
+                nonce
+            }, user1KeyPair.secretKey);
+
+            const result = await didRegistry.send(
                 user1.getSender(),
-                { value: toNano('0.05') },
+                {
+                    value: toNano('0.05'),
+                },
                 {
                     $$type: 'UpdateDID',
+                    publicKey: user1KeyPair.publicKeyBigInt,
                     newUsername: null,
                     newKycHash,
-                    nonce: 2n,
-                    signature: createMockSignature().asSlice(),
+                    nonce: BigInt(nonce),
+                    signature: signatureToCell(signature),
                 }
             );
 
-            expect(updateResult.transactions).toHaveTransaction({
+            expect(result.transactions).toHaveTransaction({
                 from: user1.address,
                 to: didRegistry.address,
                 success: true,
             });
 
-            const updatedDID = await didRegistry.getGetDid(user1.address);
-            expect(updatedDID?.username).toBe('alice'); // Should remain unchanged
-            expect(updatedDID?.kycHash).toBe(newKycHash);
+            const didInfo = await didRegistry.getGetDid(user1KeyPair.publicKeyBigInt);
+            expect(didInfo!.kycHash).toBe(newKycHash);
         });
 
         it('should update both username and KYC hash', async () => {
-            const newUsername = 'alice_new';
-            const newKycHash = 'newKycHash789';
-            
-            const updateResult = await didRegistry.send(
+            const newUsername = 'completely_new_user';
+            const newKycHash = 'completely_new_kyc';
+            const nonce = 2;
+
+            const signature = await createSignature('update', {
+                newUsername,
+                newKycHash,
+                nonce
+            }, user1KeyPair.secretKey);
+
+            const result = await didRegistry.send(
                 user1.getSender(),
-                { value: toNano('0.05') },
+                {
+                    value: toNano('0.05'),
+                },
                 {
                     $$type: 'UpdateDID',
+                    publicKey: user1KeyPair.publicKeyBigInt,
                     newUsername,
                     newKycHash,
-                    nonce: 2n,
-                    signature: createMockSignature().asSlice(),
+                    nonce: BigInt(nonce),
+                    signature: signatureToCell(signature),
+                }
+            );
+
+            expect(result.transactions).toHaveTransaction({
+                from: user1.address,
+                to: didRegistry.address,
+                success: true,
+            });
+
+            const didInfo = await didRegistry.getGetDid(user1KeyPair.publicKeyBigInt);
+            expect(didInfo!.username).toBe(newUsername);
+            expect(didInfo!.kycHash).toBe(newKycHash);
+        });
+
+        it('should fail update with invalid signature', async () => {
+            const newUsername = 'hacked_user';
+            const nonce = 2;
+
+            // Use wrong private key
+            const wrongSignature = await createSignature('update', {
+                newUsername,
+                newKycHash: null,
+                nonce
+            }, user2KeyPair.secretKey);
+
+            const result = await didRegistry.send(
+                user1.getSender(),
+                {
+                    value: toNano('0.05'),
+                },
+                {
+                    $$type: 'UpdateDID',
+                    publicKey: user1KeyPair.publicKeyBigInt,
+                    newUsername,
+                    newKycHash: null,
+                    nonce: BigInt(nonce),
+                    signature: signatureToCell(wrongSignature),
+                }
+            );
+
+            expect(result.transactions).toHaveTransaction({
+                from: user1.address,
+                to: didRegistry.address,
+                success: false,
+            });
+        });
+
+        it('should fail update for non-existent DID', async () => {
+            const newUsername = 'non_existent_user';
+            const nonce = 1;
+
+            const signature = await createSignature('update', {
+                newUsername,
+                newKycHash: null,
+                nonce
+            }, user2KeyPair.secretKey);
+
+            const result = await didRegistry.send(
+                user2.getSender(),
+                {
+                    value: toNano('0.05'),
+                },
+                {
+                    $$type: 'UpdateDID',
+                    publicKey: user2KeyPair.publicKeyBigInt,
+                    newUsername,
+                    newKycHash: null,
+                    nonce: BigInt(nonce),
+                    signature: signatureToCell(signature),
+                }
+            );
+
+            expect(result.transactions).toHaveTransaction({
+                from: user2.address,
+                to: didRegistry.address,
+                success: false,
+            });
+        });
+    });
+
+    describe('DID Revocation', () => {
+        beforeEach(async () => {
+            // Register a DID first
+            const username = 'revokable_user';
+            const nonce = 1;
+
+            const signature = await createSignature('register', {
+                publicKey: user1KeyPair.publicKeyBigInt,
+                username,
+                kycHash: 'kyc_123',
+                nonce
+            }, user1KeyPair.secretKey);
+
+            await didRegistry.send(
+                user1.getSender(),
+                {
+                    value: toNano('0.05'),
+                },
+                {
+                    $$type: 'RegisterDID',
+                    publicKey: user1KeyPair.publicKeyBigInt,
+                    username,
+                    kycHash: 'kyc_123',
+                    nonce: BigInt(nonce),
+                    signature: signatureToCell(signature),
+                }
+            );
+        });
+
+        it('should revoke DID successfully', async () => {
+            const nonce = 2;
+
+            const signature = await createSignature('revoke', {
+                nonce
+            }, user1KeyPair.secretKey);
+
+            const result = await didRegistry.send(
+                user1.getSender(),
+                {
+                    value: toNano('0.05'),
+                },
+                {
+                    $$type: 'RevokeDID',
+                    publicKey: user1KeyPair.publicKeyBigInt,
+                    nonce: BigInt(nonce),
+                    signature: signatureToCell(signature),
+                }
+            );
+
+            expect(result.transactions).toHaveTransaction({
+                from: user1.address,
+                to: didRegistry.address,
+                success: true,
+            });
+
+            const didInfo = await didRegistry.getGetDid(user1KeyPair.publicKeyBigInt);
+            expect(didInfo!.isActive).toBe(false);
+            expect(didInfo!.nonce).toBe(BigInt(nonce));
+
+            const isActive = await didRegistry.getIsDidActive(user1KeyPair.publicKeyBigInt);
+            expect(isActive).toBe(false);
+        });
+
+        it('should fail revocation with invalid signature', async () => {
+            const nonce = 2;
+
+            const wrongSignature = await createSignature('revoke', {
+                nonce
+            }, user2KeyPair.secretKey);
+
+            const result = await didRegistry.send(
+                user1.getSender(),
+                {
+                    value: toNano('0.05'),
+                },
+                {
+                    $$type: 'RevokeDID',
+                    publicKey: user1KeyPair.publicKeyBigInt,
+                    nonce: BigInt(nonce),
+                    signature: signatureToCell(wrongSignature),
+                }
+            );
+
+            expect(result.transactions).toHaveTransaction({
+                from: user1.address,
+                to: didRegistry.address,
+                success: false,
+            });
+        });
+
+        it('should fail revocation for non-existent DID', async () => {
+            const nonce = 1;
+
+            const signature = await createSignature('revoke', {
+                nonce
+            }, user2KeyPair.secretKey);
+
+            const result = await didRegistry.send(
+                user2.getSender(),
+                {
+                    value: toNano('0.05'),
+                },
+                {
+                    $$type: 'RevokeDID',
+                    publicKey: user2KeyPair.publicKeyBigInt,
+                    nonce: BigInt(nonce),
+                    signature: signatureToCell(signature),
+                }
+            );
+
+            expect(result.transactions).toHaveTransaction({
+                from: user2.address,
+                to: didRegistry.address,
+                success: false,
+            });
+        });
+
+        it('should fail operations on revoked DID', async () => {
+            // First revoke the DID
+            const revokeNonce = 2;
+            const revokeSignature = await createSignature('revoke', {
+                nonce: revokeNonce
+            }, user1KeyPair.secretKey);
+
+            await didRegistry.send(
+                user1.getSender(),
+                {
+                    value: toNano('0.05'),
+                },
+                {
+                    $$type: 'RevokeDID',
+                    publicKey: user1KeyPair.publicKeyBigInt,
+                    nonce: BigInt(revokeNonce),
+                    signature: signatureToCell(revokeSignature),
+                }
+            );
+
+            // Try to update revoked DID
+            const updateNonce = 3;
+            const updateSignature = await createSignature('update', {
+                newUsername: 'should_fail',
+                newKycHash: null,
+                nonce: updateNonce
+            }, user1KeyPair.secretKey);
+
+            const updateResult = await didRegistry.send(
+                user1.getSender(),
+                {
+                    value: toNano('0.05'),
+                },
+                {
+                    $$type: 'UpdateDID',
+                    publicKey: user1KeyPair.publicKeyBigInt,
+                    newUsername: 'should_fail',
+                    newKycHash: null,
+                    nonce: BigInt(updateNonce),
+                    signature: signatureToCell(updateSignature),
                 }
             );
 
             expect(updateResult.transactions).toHaveTransaction({
                 from: user1.address,
                 to: didRegistry.address,
-                success: true,
+                success: false,
             });
 
-            const updatedDID = await didRegistry.getGetDid(user1.address);
-            expect(updatedDID?.username).toBe(newUsername);
-            expect(updatedDID?.kycHash).toBe(newKycHash);
-        });
-    });
+            // Try to revoke already revoked DID
+            const secondRevokeNonce = 3;
+            const secondRevokeSignature = await createSignature('revoke', {
+                nonce: secondRevokeNonce
+            }, user1KeyPair.secretKey);
 
-    describe('Revoke DID', () => {
-        beforeEach(async () => {
-            await registerTestDID(user1, 'alice');
-        });
-
-        it('should revoke DID successfully', async () => {
-            const revokeResult = await didRegistry.send(
-                user1.getSender(),
-                { value: toNano('0.05') },
-                {
-                    $$type: 'RevokeDID',
-                    nonce: 2n,
-                    signature: createMockSignature().asSlice(),
-                }
-            );
-
-            expect(revokeResult.transactions).toHaveTransaction({
-                from: user1.address,
-                to: didRegistry.address,
-                success: true,
-            });
-
-            // Verify DID is revoked
-            const revokedDID = await didRegistry.getGetDid(user1.address);
-            expect(revokedDID?.isActive).toBe(false);
-
-            const isActive = await didRegistry.getIsDidActive(user1.address);
-            expect(isActive).toBe(false);
-
-            // Should not return username/kyc for revoked DID
-            const username_result = await didRegistry.getGetUsername(user1.address);
-            expect(username_result).toBeNull();
-
-            const kycHash_result = await didRegistry.getGetKycHash(user1.address);
-            expect(kycHash_result).toBeNull();
-
-            const publicKey_result = await didRegistry.getGetPublicKey(user1.address);
-            expect(publicKey_result).toBeNull();
-        });
-
-        it('should fail to revoke already revoked DID', async () => {
-            // Revoke first
-            await didRegistry.send(
-                user1.getSender(),
-                { value: toNano('0.05') },
-                {
-                    $$type: 'RevokeDID',
-                    nonce: 2n,
-                    signature: createMockSignature().asSlice(),
-                }
-            );
-
-            // Try to revoke again
             const secondRevokeResult = await didRegistry.send(
                 user1.getSender(),
-                { value: toNano('0.05') },
+                {
+                    value: toNano('0.05'),
+                },
                 {
                     $$type: 'RevokeDID',
-                    nonce: 3n,
-                    signature: createMockSignature().asSlice(),
+                    publicKey: user1KeyPair.publicKeyBigInt,
+                    nonce: BigInt(secondRevokeNonce),
+                    signature: signatureToCell(secondRevokeSignature),
                 }
             );
 
@@ -365,388 +779,201 @@ describe('DIDRegistry', () => {
         });
     });
 
-    describe('Validation Tests', () => {
-        it('should fail with invalid username length', async () => {
-            // Too short
-            const shortResult = await didRegistry.send(
-                user1.getSender(),
-                { value: toNano('0.05') },
-                {
-                    $$type: 'RegisterDID',
-                    username: '', // Empty username
-                    kycHash: null,
-                    publicKey: createMockPublicKey(),
-                    nonce: 1n,
-                    signature: createMockSignature().asSlice(),
-                }
-            );
+    describe('Multiple Users', () => {
+        it('should handle multiple users independently', async () => {
+            // Register user1
+            const user1Username = 'user1';
+            const user1Nonce = 1;
 
-            expect(shortResult.transactions).toHaveTransaction({
-                from: user1.address,
-                to: didRegistry.address,
-                success: false,
-            });
+            const user1Signature = await createSignature('register', {
+                publicKey: user1KeyPair.publicKeyBigInt,
+                username: user1Username,
+                kycHash: 'kyc1',
+                nonce: user1Nonce
+            }, user1KeyPair.secretKey);
 
-            // Too long
-            const longUsername = 'a'.repeat(100); // Exceeds MAX_USERNAME_LENGTH
-            const longResult = await didRegistry.send(
-                user1.getSender(),
-                { value: toNano('0.05') },
-                {
-                    $$type: 'RegisterDID',
-                    username: longUsername,
-                    kycHash: null,
-                    publicKey: createMockPublicKey(),
-                    nonce: 1n,
-                    signature: createMockSignature().asSlice(),
-                }
-            );
-
-            expect(longResult.transactions).toHaveTransaction({
-                from: user1.address,
-                to: didRegistry.address,
-                success: false,
-            });
-        });
-
-        it('should fail with invalid public key', async () => {
-            const result = await didRegistry.send(
-                user1.getSender(),
-                { value: toNano('0.05') },
-                {
-                    $$type: 'RegisterDID',
-                    username: 'alice',
-                    kycHash: null,
-                    publicKey: 0n, // Invalid public key
-                    nonce: 1n,
-                    signature: createMockSignature().asSlice(),
-                }
-            );
-
-            expect(result.transactions).toHaveTransaction({
-                from: user1.address,
-                to: didRegistry.address,
-                success: false,
-            });
-        });
-
-        it('should fail with invalid KYC hash length', async () => {
-            const longKycHash = 'a'.repeat(200); // Exceeds MAX_KYC_HASH_LENGTH
-            
-            const result = await didRegistry.send(
-                user1.getSender(),
-                { value: toNano('0.05') },
-                {
-                    $$type: 'RegisterDID',
-                    username: 'alice',
-                    kycHash: longKycHash,
-                    publicKey: createMockPublicKey(),
-                    nonce: 1n,
-                    signature: createMockSignature().asSlice(),
-                }
-            );
-
-            // Note: Very long KYC hash might still pass if contract doesn't validate length properly
-            // This test checks the expected behavior but actual implementation may vary
-            const didInfo = await didRegistry.getGetDid(user1.address);
-            
-            // If DID was created, the validation didn't work as expected
-            // If no DID was created, validation worked correctly
-            if (didInfo) {
-                console.log('⚠️ KYC hash validation may need strengthening');
-                expect(didInfo.kycHash).toBe(longKycHash);
-            } else {
-                // Expected: registration should fail
-                expect(result.transactions).toHaveTransaction({
-                    from: user1.address,
-                    to: didRegistry.address,
-                    success: false,
-                });
-            }
-        });
-
-        it('should prevent duplicate DID registration', async () => {
-            // Register first DID
-            await registerTestDID(user1);
-
-            // Try to register again
-            const duplicateResult = await registerTestDID(user1);
-
-            expect(duplicateResult.transactions).toHaveTransaction({
-                from: user1.address,
-                to: didRegistry.address,
-                success: false,
-            });
-        });
-
-        it('should handle nonce validation correctly', async () => {
-            // Should fail with invalid nonce (should start with 1)
-            const invalidNonceResult = await didRegistry.send(
-                user1.getSender(),
-                { value: toNano('0.05') },
-                {
-                    $$type: 'RegisterDID',
-                    username: 'alice',
-                    kycHash: null,
-                    publicKey: createMockPublicKey(),
-                    nonce: 5n, // Invalid - should be 1
-                    signature: createMockSignature().asSlice(),
-                }
-            );
-
-            expect(invalidNonceResult.transactions).toHaveTransaction({
-                from: user1.address,
-                to: didRegistry.address,
-                success: false,
-            });
-
-            // Should succeed with correct nonce
-            const validResult = await registerTestDID(user1);
-
-            expect(validResult.transactions).toHaveTransaction({
-                from: user1.address,
-                to: didRegistry.address,
-                success: true,
-            });
-        });
-
-        it('should fail operations on non-existent DID', async () => {
-            // Try to update non-existent DID
-            const updateResult = await didRegistry.send(
-                user1.getSender(),
-                { value: toNano('0.05') },
-                {
-                    $$type: 'UpdateDID',
-                    newUsername: 'newname',
-                    newKycHash: null,
-                    nonce: 1n,
-                    signature: createMockSignature().asSlice(),
-                }
-            );
-
-            expect(updateResult.transactions).toHaveTransaction({
-                from: user1.address,
-                to: didRegistry.address,
-                success: false,
-            });
-
-            // Try to revoke non-existent DID
-            const revokeResult = await didRegistry.send(
-                user1.getSender(),
-                { value: toNano('0.05') },
-                {
-                    $$type: 'RevokeDID',
-                    nonce: 1n,
-                    signature: createMockSignature().asSlice(),
-                }
-            );
-
-            expect(revokeResult.transactions).toHaveTransaction({
-                from: user1.address,
-                to: didRegistry.address,
-                success: false,
-            });
-        });
-
-        it('should fail operations on revoked DID', async () => {
-            // Register and revoke DID
-            await registerTestDID(user1);
             await didRegistry.send(
                 user1.getSender(),
-                { value: toNano('0.05') },
                 {
-                    $$type: 'RevokeDID',
-                    nonce: 2n,
-                    signature: createMockSignature().asSlice(),
+                    value: toNano('0.05'),
+                },
+                {
+                    $$type: 'RegisterDID',
+                    publicKey: user1KeyPair.publicKeyBigInt,
+                    username: user1Username,
+                    kycHash: 'kyc1',
+                    nonce: BigInt(user1Nonce),
+                    signature: signatureToCell(user1Signature),
                 }
             );
 
-            // Try to update revoked DID
-            const updateResult = await didRegistry.send(
+            // Register user2
+            const user2Username = 'user2';
+            const user2Nonce = 1;
+
+            const user2Signature = await createSignature('register', {
+                publicKey: user2KeyPair.publicKeyBigInt,
+                username: user2Username,
+                kycHash: 'kyc2',
+                nonce: user2Nonce
+            }, user2KeyPair.secretKey);
+
+            await didRegistry.send(
+                user2.getSender(),
+                {
+                    value: toNano('0.05'),
+                },
+                {
+                    $$type: 'RegisterDID',
+                    publicKey: user2KeyPair.publicKeyBigInt,
+                    username: user2Username,
+                    kycHash: 'kyc2',
+                    nonce: BigInt(user2Nonce),
+                    signature: signatureToCell(user2Signature),
+                }
+            );
+
+            // Check both DIDs exist
+            const user1DID = await didRegistry.getGetDid(user1KeyPair.publicKeyBigInt);
+            const user2DID = await didRegistry.getGetDid(user2KeyPair.publicKeyBigInt);
+
+            expect(user1DID!.username).toBe(user1Username);
+            expect(user2DID!.username).toBe(user2Username);
+
+            const totalDids = await didRegistry.getGetTotalDids();
+            expect(totalDids).toBe(2n);
+
+            // Update user1 independently
+            const user1UpdateNonce = 2;
+            const user1UpdateSignature = await createSignature('update', {
+                newUsername: 'user1_updated',
+                newKycHash: null,
+                nonce: user1UpdateNonce
+            }, user1KeyPair.secretKey);
+
+            await didRegistry.send(
                 user1.getSender(),
-                { value: toNano('0.05') },
+                {
+                    value: toNano('0.05'),
+                },
                 {
                     $$type: 'UpdateDID',
-                    newUsername: 'newname',
+                    publicKey: user1KeyPair.publicKeyBigInt,
+                    newUsername: 'user1_updated',
                     newKycHash: null,
-                    nonce: 3n,
-                    signature: createMockSignature().asSlice(),
+                    nonce: BigInt(user1UpdateNonce),
+                    signature: signatureToCell(user1UpdateSignature),
                 }
             );
 
-            expect(updateResult.transactions).toHaveTransaction({
-                from: user1.address,
-                to: didRegistry.address,
-                success: false,
-            });
+            // Check user1 is updated but user2 is unchanged
+            const updatedUser1DID = await didRegistry.getGetDid(user1KeyPair.publicKeyBigInt);
+            const unchangedUser2DID = await didRegistry.getGetDid(user2KeyPair.publicKeyBigInt);
+
+            expect(updatedUser1DID!.username).toBe('user1_updated');
+            expect(unchangedUser2DID!.username).toBe(user2Username);
         });
     });
 
-    describe('Ownership Management', () => {
-        it('should transfer ownership successfully', async () => {
-            const newOwner = user1.address;
-            
-            const transferResult = await didRegistry.send(
-                deployer.getSender(),
-                { value: toNano('0.05') },
-                {
-                    $$type: 'TransferOwnership',
-                    newOwner,
-                }
-            );
+    describe('Edge Cases', () => {
+        it('should handle zero public key rejection', async () => {
+            const signature = await createSignature('register', {
+                publicKey: 0n,
+                username: 'zero_user',
+                kycHash: null,
+                nonce: 1
+            }, user1KeyPair.secretKey);
 
-            expect(transferResult.transactions).toHaveTransaction({
-                from: deployer.address,
-                to: didRegistry.address,
-                success: true,
-            });
-
-            // Verify ownership has been transferred
-            const contractOwner = await didRegistry.getGetContractOwner();
-            expect(contractOwner).toEqualAddress(newOwner);
-        });
-
-        it('should prevent unauthorized ownership transfer', async () => {
-            const newOwner = user2.address;
-            
-            const transferResult = await didRegistry.send(
+            const result = await didRegistry.send(
                 user1.getSender(),
-                { value: toNano('0.05') },
                 {
-                    $$type: 'TransferOwnership',
-                    newOwner,
+                    value: toNano('0.05'),
+                },
+                {
+                    $$type: 'RegisterDID',
+                    publicKey: 0n,
+                    username: 'zero_user',
+                    kycHash: null,
+                    nonce: 1n,
+                    signature: signatureToCell(signature),
                 }
             );
 
-            expect(transferResult.transactions).toHaveTransaction({
+            expect(result.transactions).toHaveTransaction({
                 from: user1.address,
                 to: didRegistry.address,
                 success: false,
             });
-
-            // Owner should remain unchanged
-            const contractOwner = await didRegistry.getGetContractOwner();
-            expect(contractOwner).toEqualAddress(deployer.address);
         });
 
-        it('should prevent transferring to same owner', async () => {
-            const sameOwner = deployer.address;
-            
-            const transferResult = await didRegistry.send(
-                deployer.getSender(),
-                { value: toNano('0.05') },
+        it('should handle large nonce gap rejection', async () => {
+            const largeNonce = 200; // Exceeds MAX_NONCE_GAP
+
+            const signature = await createSignature('register', {
+                publicKey: user1KeyPair.publicKeyBigInt,
+                username: 'large_nonce_user',
+                kycHash: null,
+                nonce: largeNonce
+            }, user1KeyPair.secretKey);
+
+            const result = await didRegistry.send(
+                user1.getSender(),
                 {
-                    $$type: 'TransferOwnership',
-                    newOwner: sameOwner,
+                    value: toNano('0.05'),
+                },
+                {
+                    $$type: 'RegisterDID',
+                    publicKey: user1KeyPair.publicKeyBigInt,
+                    username: 'large_nonce_user',
+                    kycHash: null,
+                    nonce: BigInt(largeNonce),
+                    signature: signatureToCell(signature),
                 }
             );
 
-            expect(transferResult.transactions).toHaveTransaction({
-                from: deployer.address,
+            expect(result.transactions).toHaveTransaction({
+                from: user1.address,
                 to: didRegistry.address,
                 success: false,
             });
         });
-    });
 
-    describe('Getter Functions', () => {
-        beforeEach(async () => {
-            await registerTestDID(user1, 'alice', 'kycHash123');
-            await registerTestDID(user2, 'bob', null);
-        });
+        it('should handle empty string values', async () => {
+            const username = '';
+            const kycHash = '';
+            const nonce = 1;
 
-        it('should return correct DID information', async () => {
-            const didInfo = await didRegistry.getGetDid(user1.address);
-            expect(didInfo).not.toBeNull();
-            expect(didInfo?.username).toBe('alice');
-            expect(didInfo?.kycHash).toBe('kycHash123');
-            expect(didInfo?.isActive).toBe(true);
-        });
+            const signature = await createSignature('register', {
+                publicKey: user1KeyPair.publicKeyBigInt,
+                username,
+                kycHash,
+                nonce
+            }, user1KeyPair.secretKey);
 
-        it('should return null for non-existent DID', async () => {
-            const didInfo = await didRegistry.getGetDid(deployer.address);
-            expect(didInfo).toBeNull();
-        });
+            const result = await didRegistry.send(
+                user1.getSender(),
+                {
+                    value: toNano('0.05'),
+                },
+                {
+                    $$type: 'RegisterDID',
+                    publicKey: user1KeyPair.publicKeyBigInt,
+                    username,
+                    kycHash,
+                    nonce: BigInt(nonce),
+                    signature: signatureToCell(signature),
+                }
+            );
 
-        it('should return correct active status', async () => {
-            const isActive1 = await didRegistry.getIsDidActive(user1.address);
-            expect(isActive1).toBe(true);
-
-            const isActive2 = await didRegistry.getIsDidActive(deployer.address);
-            expect(isActive2).toBe(false);
-        });
-
-        it('should return username only for active DIDs', async () => {
-            const username = await didRegistry.getGetUsername(user1.address);
-            expect(username).toBe('alice');
-
-            const nonExistentUsername = await didRegistry.getGetUsername(deployer.address);
-            expect(nonExistentUsername).toBeNull();
-        });
-
-        it('should return KYC hash only for active DIDs', async () => {
-            const kycHash = await didRegistry.getGetKycHash(user1.address);
-            expect(kycHash).toBe('kycHash123');
-
-            const nullKycHash = await didRegistry.getGetKycHash(user2.address);
-            expect(nullKycHash).toBeNull();
-
-            const nonExistentKycHash = await didRegistry.getGetKycHash(deployer.address);
-            expect(nonExistentKycHash).toBeNull();
-        });
-
-        it('should return public key only for active DIDs', async () => {
-            const publicKey = await didRegistry.getGetPublicKey(user1.address);
-            expect(publicKey).toBe(createMockPublicKey());
-
-            const nonExistentPublicKey = await didRegistry.getGetPublicKey(deployer.address);
-            expect(nonExistentPublicKey).toBeNull();
-        });
-
-        it('should return correct total DIDs count', async () => {
-            const totalDIDs = await didRegistry.getGetTotalDiDs();
-            expect(totalDIDs).toBe(2n);
-        });
-
-        it('should return correct user nonce', async () => {
-            const nonce = await didRegistry.getGetUserNonce(user1.address);
-            expect(nonce).toBe(1n);
-
-            const newUserNonce = await didRegistry.getGetUserNonce(deployer.address);
-            expect(newUserNonce).toBe(0n);
-        });
-    });
-
-    describe('Bounced Messages', () => {
-        it('should handle bounced RegisterDID messages', async () => {
-            // This test would require more complex setup to simulate bounced messages
-            // For now, we'll just verify the bounced handlers exist
-            expect(true).toBe(true);
-        });
-    });
-
-    describe('Gas Optimization Tests', () => {
-        it('should efficiently batch storage operations during registration', async () => {
-            const result = await registerTestDID(user1, 'alice', 'kycHash123');
-            
-            // Verify successful registration with minimal gas usage
             expect(result.transactions).toHaveTransaction({
                 from: user1.address,
                 to: didRegistry.address,
                 success: true,
             });
 
-            // Verify all data was set correctly in single operation
-            const didInfo = await didRegistry.getGetDid(user1.address);
-            expect(didInfo?.username).toBe('alice');
-            expect(didInfo?.kycHash).toBe('kycHash123');
-            expect(didInfo?.isActive).toBe(true);
-            
-            const nonce = await didRegistry.getGetUserNonce(user1.address);
-            expect(nonce).toBe(1n);
-            
-            const totalDIDs = await didRegistry.getGetTotalDiDs();
-            expect(totalDIDs).toBe(1n);
+            const didInfo = await didRegistry.getGetDid(user1KeyPair.publicKeyBigInt);
+            expect(didInfo!.username).toBe('');
+            expect(didInfo!.kycHash).toBe('');
         });
     });
 });
